@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>الكتاب المقدس بالمصري</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        /* Royal Egyptian Palette */
+        --primary-50: #f0fdfa;
+        --primary-100: #ccfbf1;
+        --primary-600: #0f766e;
+        --primary-700: #0f5156; /* Deep Teal */
+        --primary-800: #115e59;
+        
+        --gold-100: #fef3c7;
+        --gold-400: #fbbf24;
+        --gold-500: #f59e0b;
+        --gold-600: #d97706; /* Royal Gold */
+      }
+      body {
+        font-family: 'Cairo', sans-serif;
+        background-color: #fdfbf7; /* Papyrus-like warm white */
+        background-image: radial-gradient(#d4af37 0.5px, transparent 0.5px);
+        background-size: 20px 20px;
+        background-attachment: fixed;
+        color: #1e293b;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        scroll-behavior: smooth;
+      }
+      .font-amiri {
+        font-family: 'Amiri', serif;
+      }
+      
+      /* Text Selection */
+      ::selection {
+        background-color: var(--gold-100);
+        color: var(--primary-700);
+      }
+
+      /* Custom scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 10px;
+        border: 2px solid #fdfbf7;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+
+      /* Animations */
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-fade-in {
+        animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.1",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.31.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
