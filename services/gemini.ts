@@ -2,7 +2,28 @@ import { GoogleGenAI, Type, Chat, GenerateContentResponse, Modality } from "@goo
 import { Verse } from '../types';
 import { BIBLE_BOOKS } from '../constants';
 
-const getClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- API KEY MANAGEMENT ---
+const API_KEY_STORAGE = 'bible_masri_api_key';
+
+export const getStoredApiKey = (): string | null => {
+    return localStorage.getItem(API_KEY_STORAGE);
+};
+
+export const setStoredApiKey = (key: string) => {
+    localStorage.setItem(API_KEY_STORAGE, key);
+};
+
+export const removeStoredApiKey = () => {
+    localStorage.removeItem(API_KEY_STORAGE);
+};
+
+const getClient = () => {
+    const apiKey = getStoredApiKey();
+    if (!apiKey) {
+        throw new Error("API Key is missing. Please set it in the settings.");
+    }
+    return new GoogleGenAI({ apiKey });
+};
 
 const SYSTEM_INSTRUCTION_ORIGINAL = `
 You are a fast Bible Text Retrieval System.

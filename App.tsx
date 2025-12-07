@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { BIBLE_BOOKS } from './constants';
 import { Verse, ChapterTranslation } from './types';
-import { fetchOriginalVerses, fetchTranslationForVerses, resetChat, generateChapterAudio, base64ToBlobUrl } from './services/gemini';
+import { fetchOriginalVerses, fetchTranslationForVerses, resetChat, generateChapterAudio, base64ToBlobUrl, getStoredApiKey, setStoredApiKey, removeStoredApiKey } from './services/gemini';
 import { getCachedTranslation, saveTranslationToCache, clearCache, getCachedAudio, saveAudioToCache } from './services/storage';
 import Controls from './components/Controls';
 import VerseCard from './components/VerseCard';
 import Chat from './components/Chat';
 import AppLogo from './components/AppLogo';
-import { Info, ToggleLeft, ToggleRight, AlertTriangle, Trash2, MessageCircle, Sparkles, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
+import ApiKeyModal from './components/ApiKeyModal';
+import { AlertTriangle, Trash2, MessageCircle, Eye, EyeOff, Menu } from 'lucide-react';
 
 const App: React.FC = () => {
+  // Key Management State
+  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
+  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
+
   const [selectedBookId, setSelectedBookId] = useState<string>(BIBLE_BOOKS[0].id);
   const [selectedChapter, setSelectedChapter] = useState<number>(1);
   const [verses, setVerses] = useState<Verse[]>([]);
@@ -17,6 +22,7 @@ const App: React.FC = () => {
   // View State
   const [isTranslatedMode, setIsTranslatedMode] = useState<boolean>(false);
   const [showSecondaryText, setShowSecondaryText] = useState<boolean>(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true); // Default open for Desktop
   
   // Loading States
   const [isFetchingOriginal, setIsFetchingOriginal] = useState<boolean>(false); // Initial load
@@ -35,6 +41,51 @@ const App: React.FC = () => {
   
   // Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
+
+  // --- RESPONSIVE SIDEBAR INIT ---
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1024) {
+        setIsSidebarOpen(false);
+      } else {
+        setIsSidebarOpen(true);
+      }
+    };
+    
+    // Set initial
+    handleResize();
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // --- API KEY CHECK ---
+  useEffect(() => {
+    const key = getStoredApiKey();
+    if (!key) {
+        setHasApiKey(false);
+        setShowApiKeyModal(true);
+    } else {
+        setHasApiKey(true);
+        setShowApiKeyModal(false);
+    }
+  }, []);
+
+  const handleSaveApiKey = (key: string) => {
+      setStoredApiKey(key);
+      setHasApiKey(true);
+      setShowApiKeyModal(false);
+      // Reload data if needed
+      if (verses.length === 0) {
+          loadChapterData();
+      }
+  };
+
+  const handleChangeApiKey = () => {
+      removeStoredApiKey();
+      setHasApiKey(false);
+      setShowApiKeyModal(true);
+  };
 
   // --- Navigation Helpers ---
   const handleNextChapter = useCallback(() => {
@@ -77,6 +128,8 @@ const App: React.FC = () => {
 
   // --- MAIN DATA FETCHING LOGIC (STAGE 1: ORIGINAL TEXT) ---
   const loadChapterData = useCallback(async () => {
+    if (!hasApiKey && !getStoredApiKey()) return; // Don't try loading if no key
+
     setError(null);
     setVerses([]);
     setIsFetchingOriginal(true);
@@ -116,12 +169,14 @@ const App: React.FC = () => {
     } finally {
       setIsFetchingOriginal(false);
     }
-  }, [selectedBookId, selectedChapter]);
+  }, [selectedBookId, selectedChapter, hasApiKey]);
 
   // Trigger load on change
   useEffect(() => {
-      loadChapterData();
-  }, [loadChapterData]);
+      if (hasApiKey) {
+          loadChapterData();
+      }
+  }, [loadChapterData, hasApiKey]);
 
   // --- TRANSLATION LOGIC (STAGE 2: ON DEMAND) ---
   const handleActivateTranslation = async () => {
@@ -155,7 +210,7 @@ const App: React.FC = () => {
 
       } catch (err: any) {
           console.error(err);
-          setError("فشل في الترجمة. حاول مرة أخرى.");
+          setError("فشل في الترجمة. يرجى التأكد من مفتاح API والمحاولة مرة أخرى.");
       } finally {
           setIsTranslating(false);
       }
@@ -280,10 +335,21 @@ const App: React.FC = () => {
     <div className="min-h-screen font-sans relative">
       <div className="fixed top-0 left-0 w-full h-screen bg-gradient-to-b from-[#fdfbf7] via-[#fffbeb] to-[#fdfbf7] pointer-events-none z-0 opacity-80" />
       
-      <header className="bg-white/80 backdrop-blur-xl border-b border-amber-100/50 sticky top-0 z-40 shadow-sm">
+      {showApiKeyModal && <ApiKeyModal onSave={handleSaveApiKey} />}
+
+      <header 
+        className="bg-white/80 backdrop-blur-xl border-b border-amber-100/50 sticky top-0 z-40 shadow-sm transition-transform duration-500"
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-             <AppLogo className="w-10 h-10 md:w-12 md:h-12" />
+          <div className="flex items-center gap-3">
+             <button 
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+                className="p-2 -mr-2 text-slate-500 hover:text-[#0F5156] hover:bg-slate-50 rounded-lg transition-colors"
+                title="القائمة"
+             >
+                <Menu size={24} />
+             </button>
+             <AppLogo className="w-9 h-9 md:w-11 md:h-11" />
              <div>
                 <h1 className="text-lg md:text-2xl font-bold text-slate-800 tracking-tight font-amiri">
                   الكتاب المقدس <span className="text-[#0F5156]">بالمصري</span>
@@ -311,38 +377,40 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Layout Grid - Added pb-32 for mobile bottom bar clearance */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 lg:py-8 relative z-10 pb-32 lg:pb-8">
+      {/* Main Layout Grid */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 lg:py-8 relative z-10 transition-all duration-500 pb-16">
         <div className={`flex flex-col lg:flex-row gap-8 transition-all duration-500 ${isChatOpen ? 'lg:mr-[460px]' : ''}`}>
              
-            {/* Sidebar / Controls Container */}
-            <div className="lg:w-72 lg:flex-shrink-0 z-30">
-                <Controls 
-                    selectedBookId={selectedBookId}
-                    selectedChapter={selectedChapter}
-                    onBookChange={setSelectedBookId}
-                    onChapterChange={setSelectedChapter}
-                    onTranslate={handleActivateTranslation}
-                    
-                    isLoading={isTranslating || isFetchingOriginal}
-                    isTranslatedMode={isTranslatedMode}
-                    
-                    isAudioLoading={isAudioLoading}
-                    hasContent={verses.length > 0}
-                    isPlaying={isPlayingAudio}
-                    currentAudioTime={currentAudioTime}
-                    audioDuration={audioDuration}
-                    onTogglePlay={handleTogglePlay}
-                    onSeek={handleSeek}
+            {/* Sidebar Controls (Responsive) */}
+            <Controls 
+                isOpen={isSidebarOpen}
+                onClose={() => setIsSidebarOpen(false)}
+                
+                selectedBookId={selectedBookId}
+                selectedChapter={selectedChapter}
+                onBookChange={setSelectedBookId}
+                onChapterChange={setSelectedChapter}
+                onTranslate={handleActivateTranslation}
+                
+                isLoading={isTranslating || isFetchingOriginal}
+                isTranslatedMode={isTranslatedMode}
+                
+                isAudioLoading={isAudioLoading}
+                hasContent={verses.length > 0}
+                isPlaying={isPlayingAudio}
+                currentAudioTime={currentAudioTime}
+                audioDuration={audioDuration}
+                onTogglePlay={handleTogglePlay}
+                onSeek={handleSeek}
 
-                    fontSizeLevel={fontSizeLevel}
-                    onIncreaseFont={() => setFontSizeLevel(p => Math.min(p + 1, 5))}
-                    onDecreaseFont={() => setFontSizeLevel(p => Math.max(p - 1, 1))}
+                fontSizeLevel={fontSizeLevel}
+                onIncreaseFont={() => setFontSizeLevel(p => Math.min(p + 1, 5))}
+                onDecreaseFont={() => setFontSizeLevel(p => Math.max(p - 1, 1))}
 
-                    onNextChapter={handleNextChapter}
-                    onPrevChapter={handlePrevChapter}
-                />
-            </div>
+                onNextChapter={handleNextChapter}
+                onPrevChapter={handlePrevChapter}
+                onChangeApiKey={handleChangeApiKey}
+            />
 
             {/* Reading Content Area */}
             <div className="flex-1 min-w-0">
