@@ -1,22 +1,23 @@
 import { GoogleGenAI, Type, Chat, GenerateContentResponse, Modality } from "@google/genai";
 import { Verse } from '../types';
+import { BIBLE_BOOKS } from '../constants';
 
-// Ideally, this should be checked at startup, but for strict adherence to rules, we use it directly.
 const getClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+const SYSTEM_INSTRUCTION_ORIGINAL = `
+You are a fast Bible Text Retrieval System.
+Task: Return the EXACT Arabic text (Van Dyck version) for the requested Bible chapter.
+Output: strictly structured JSON. NO translation. NO commentary.
+`;
+
 const SYSTEM_INSTRUCTION_TRANSLATE = `
-You are an expert Bible translator and linguist specialized in Egyptian Arabic (Masri) and Standard Arabic (Fus'ha).
+You are an expert Bible translator and linguist specialized in Egyptian Arabic (Masri).
 
 Task:
-1. Retrieve the text for the requested Bible book and chapter from the standard Van Dyck Arabic Bible translation.
-2. Translate this exact text into the **Egyptian Arabic (Masri)** dialect. The translation should be natural, modern, and respectful, suitable for an Egyptian reader.
-3. Return the output as a strictly structured JSON object.
-
-Output Format:
-A JSON object containing an array called "verses". Each item in the array must be an object with:
-- "number": The verse number (integer).
-- "original": The original Van Dyck Arabic text.
-- "translated": The Egyptian Arabic translation.
+1. You will be provided with a JSON array of Bible verses in Standard Arabic (Van Dyck).
+2. Translate each verse into the **Egyptian Arabic (Masri)** dialect. 
+3. The translation should be natural, modern, and respectful.
+4. Return the output as a JSON object containing the updated "verses" array with a new "translated" field for each verse.
 `;
 
 const SYSTEM_INSTRUCTION_CHAT = `
@@ -31,10 +32,116 @@ CRITICAL PROTOCOLS:
 5.  **LANGUAGE**: Egyptian Arabic (Masri).
 `;
 
-export const fetchChapterTranslation = async (bookName: string, chapterNumber: number): Promise<Verse[]> => {
+// Helper to map our string IDs to standard Bible numeric IDs (1-66)
+// Used for api.getbible.net
+const getGetBibleId = (bookId: string): number | null => {
+    const index = BIBLE_BOOKS.findIndex(b => b.id === bookId);
+    if (index === -1) return null;
+
+    // Old Testament (Genesis to Malachi) - Indices 0-38
+    // Maps to IDs 1-39
+    if (index <= 38) return index + 1;
+
+    // New Testament (Matthew to Revelation) - Indices 48-74
+    // We skip the 9 Deuterocanonical books (indices 39-47)
+    // Matthew (index 48) should be ID 40.
+    // 48 - 8 = 40.
+    if (index >= 48) return index - 8;
+
+    // Deuterocanonical Books (indices 39-47)
+    // Not supported by standard Protestant API (arabicsv)
+    return null;
+};
+
+// FALLBACK: Use Gemini if API fails (e.g., for Deuterocanonical books not in standard APIs)
+const fetchOriginalVersesViaGemini = async (bookNameOrId: string, chapterNumber: number): Promise<Verse[]> => {
+  const ai = getClient();
+  // Find name for prompt context
+  const bookName = BIBLE_BOOKS.find(b => b.id === bookNameOrId)?.name || bookNameOrId;
+  const prompt = `Retrieve ${bookName} Chapter ${chapterNumber} (Van Dyck Arabic). Return JSON.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION_ORIGINAL,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            verses: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  number: { type: Type.INTEGER },
+                  original: { type: Type.STRING },
+                },
+                required: ["number", "original"]
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const jsonText = response.text;
+    if (!jsonText) throw new Error("No content received");
+    const parsed = JSON.parse(jsonText);
+    return parsed.verses;
+  } catch (error) {
+    console.error("Gemini Fallback Error:", error);
+    throw error;
+  }
+};
+
+// STAGE 1: Fetch Original Text (API FIRST -> GEMINI FALLBACK)
+export const fetchOriginalVerses = async (bookId: string, chapterNumber: number): Promise<Verse[]> => {
+  const apiId = getGetBibleId(bookId);
+
+  // If we have a valid ID, try the fast API first
+  if (apiId !== null) {
+      const url = `https://api.getbible.net/v2/arabicsv/${apiId}/${chapterNumber}.json`;
+      
+      try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+           throw new Error(`API Error: ${response.status}`);
+        }
+    
+        const data = await response.json();
+        
+        // getbible.net v2 format: { verses: [ { verse: 1, text: "..." }, ... ] }
+        if (!data.verses || !Array.isArray(data.verses)) {
+            throw new Error("Invalid API format");
+        }
+    
+        return data.verses.map((v: any) => ({
+          number: v.verse,
+          original: v.text.trim().replace(/[\n\r]+/g, ' ')
+        }));
+    
+      } catch (error) {
+        console.warn("Primary API (getbible.net) failed, trying fallback...", error);
+        // Fallback below
+      }
+  } else {
+      console.warn(`Book ID ${bookId} is likely Deuterocanonical (No API ID). Using AI Fallback.`);
+  }
+
+  // Final safety net / Deuterocanonical fallback
+  return await fetchOriginalVersesViaGemini(bookId, chapterNumber);
+};
+
+// STAGE 2: Translate Existing Verses (ON DEMAND - AI REQUIRED)
+export const fetchTranslationForVerses = async (verses: Verse[]): Promise<Verse[]> => {
   const ai = getClient();
   
-  const prompt = `Translate ${bookName} Chapter ${chapterNumber}.`;
+  // We send the original verses to be translated
+  const payload = JSON.stringify({ verses });
+  const prompt = `Translate these verses to Egyptian Arabic JSON: ${payload}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -64,17 +171,11 @@ export const fetchChapterTranslation = async (bookName: string, chapterNumber: n
     });
 
     const jsonText = response.text;
-    if (!jsonText) throw new Error("No content received from Gemini");
-
+    if (!jsonText) throw new Error("No content received");
     const parsed = JSON.parse(jsonText);
-    if (!parsed.verses || !Array.isArray(parsed.verses)) {
-      throw new Error("Invalid JSON structure returned");
-    }
-
     return parsed.verses;
-
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("Translation Error:", error);
     throw error;
   }
 };
@@ -85,93 +186,59 @@ export interface ChatMessage {
   groundingSources?: { title: string; uri: string }[];
 }
 
-// Store chat instances in memory (for this demo session) to maintain history
 let chatSession: Chat | null = null;
 
 export const sendMessageToChat = async (message: string, context?: string): Promise<ChatMessage> => {
     const ai = getClient();
     
-    // Initialize chat if not exists
     if (!chatSession) {
         chatSession = ai.chats.create({
             model: 'gemini-2.5-flash',
             config: {
                 systemInstruction: SYSTEM_INSTRUCTION_CHAT,
-                temperature: 0, // ZERO temperature to enforce determinism and reduce hallucinations
+                temperature: 0,
                 tools: [{googleSearch: {}}],
             }
         });
     }
 
-    // Construct the message with context and STRICT search instructions
     let fullMessage = "";
-    if (context) {
-        fullMessage += `Context: ${context}\n\n`;
-    }
-    
-    // Force the model to treat this as a search task with explicit site restrictions
+    if (context) fullMessage += `Context: ${context}\n\n`;
     fullMessage += `User Question: ${message}\n\n`;
-    fullMessage += `COMMAND: Perform a Google Search for "${message} site:st-takla.org". Answer ONLY based on the search results found. If the results are empty or irrelevant, state that you cannot answer. Do not use internal knowledge.`;
+    fullMessage += `COMMAND: Perform a Google Search for "${message} site:st-takla.org". Answer ONLY based on the search results.`;
 
     try {
         const response: GenerateContentResponse = await chatSession.sendMessage({ message: fullMessage });
         
-        // --- DATA CLEANING & EXTRACTION START ---
         let cleanText = response.text || "";
         const uniqueSourcesMap = new Map<string, { title: string; uri: string }>();
 
-        // 1. Remove internal Google Grounding Redirects and Markdown links from text
-        // We do NOT extract links from text anymore to avoid hallucinations.
-        const googleRedirectRegex = /\[.*?\]\(https:\/\/vertexaisearch\.cloud\.google\.com\/.*?\)/g;
-        cleanText = cleanText.replace(googleRedirectRegex, '');
-        const rawRedirectRegex = /https:\/\/vertexaisearch\.cloud\.google\.com\/[^\s)\]]*/g;
-        cleanText = cleanText.replace(rawRedirectRegex, '');
-        
-        // 2. Remove any other raw URLs the model might have slipped in (cleanup only)
-        // We want the text to be clean prose.
-        const otherUrlRegex = /https?:\/\/[^\s)\]]+/g;
-        cleanText = cleanText.replace(otherUrlRegex, ' ');
-
-        // 3. Remove markdown links [Title](URL)
-        const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g;
-        cleanText = cleanText.replace(markdownLinkRegex, '$1'); 
-
-        // 4. Cleanup Whitespace BUT PRESERVE NEWLINES for Markdown
-        // Replace tabs and multiple spaces on a single line with one space
+        // Cleanup
+        cleanText = cleanText.replace(/\[.*?\]\(https:\/\/vertexaisearch\.cloud\.google\.com\/.*?\)/g, '');
+        cleanText = cleanText.replace(/https:\/\/vertexaisearch\.cloud\.google\.com\/[^\s)\]]*/g, '');
+        cleanText = cleanText.replace(/https?:\/\/[^\s)\]]+/g, ' ');
+        cleanText = cleanText.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '$1'); 
         cleanText = cleanText.replace(/[ \t]+/g, ' ');
-        // Ensure max 2 newlines (paragraph breaks)
         cleanText = cleanText.replace(/\n{3,}/g, '\n\n');
         cleanText = cleanText.trim();
-        // --- DATA CLEANING END ---
 
-        // 5. Process Official Grounding Metadata (The ONLY Source of Truth)
         const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
         
         groundingChunks.forEach(chunk => {
             if (chunk.web && chunk.web.uri) {
                 const uri = chunk.web.uri;
                 const title = chunk.web.title || "St-Takla Reference";
-
-                // Filter: Must be from st-takla
-                if (uri.toLowerCase().includes('st-takla')) {
-                    if (!uniqueSourcesMap.has(uri)) {
-                        uniqueSourcesMap.set(uri, { title, uri });
-                    }
+                if (uri.toLowerCase().includes('st-takla') && !uniqueSourcesMap.has(uri)) {
+                    uniqueSourcesMap.set(uri, { title, uri });
                 }
             }
         });
 
         let sources = Array.from(uniqueSourcesMap.values());
-
-        // 6. Fallback: If ABSOLUTELY NO st-takla links found in metadata
         if (sources.length === 0) {
             const queryClean = message.replace(/\n/g, " ").trim().substring(0, 100);
             const searchUrl = `https://www.google.com/search?q=site%3Ast-takla.org+${encodeURIComponent(queryClean)}`;
-            
-            sources.push({
-                title: "بحث في St-Takla.org",
-                uri: searchUrl
-            });
+            sources.push({ title: "بحث في St-Takla.org", uri: searchUrl });
         }
             
         return {
@@ -186,9 +253,7 @@ export const sendMessageToChat = async (message: string, context?: string): Prom
     }
 };
 
-export const resetChat = () => {
-    chatSession = null;
-};
+export const resetChat = () => { chatSession = null; };
 
 // --- AUDIO HELPERS ---
 
@@ -200,23 +265,41 @@ export const generateChapterAudio = async (text: string): Promise<string> => {
             contents: [{ parts: [{ text: text }] }],
             config: {
                 responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: 'Puck' },
-                    },
-                },
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
             },
         });
-
         const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (!base64Audio) {
-             throw new Error("No audio content returned");
-        }
+        if (!base64Audio) throw new Error("No audio content returned");
         return base64Audio;
     } catch (error) {
-        console.error("TTS Generation Error", error);
+        console.error("TTS Error", error);
         throw error;
     }
+};
+
+const writeString = (view: DataView, offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+    }
+};
+
+const createWavHeader = (dataLength: number, sampleRate: number = 24000, numChannels: number = 1, bitsPerSample: number = 16): ArrayBuffer => {
+    const header = new ArrayBuffer(44);
+    const view = new DataView(header);
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataLength, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * (bitsPerSample / 8), true);
+    view.setUint16(32, numChannels * (bitsPerSample / 8), true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataLength, true);
+    return header;
 };
 
 export const base64ToBlobUrl = (base64: string): string => {
@@ -226,16 +309,7 @@ export const base64ToBlobUrl = (base64: string): string => {
     for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
     }
-    const blob = new Blob([bytes], { type: 'audio/wav' }); // Gemini returns PCM/WAV compatible bytes usually, or raw. 
-    // Actually Gemini Live API returns raw PCM, but the TTS model returns encodings that browser can often sniff or are WAV wrapped.
-    // The previous decodeAudioData context worked with it, meaning it has headers or is decodeable.
-    // For <audio> src, we might need to ensure it works. 
-    // The previous code used AudioContext.decodeAudioData.
-    // If it's raw PCM, <audio> tag won't play it directly without a WAV header.
-    // However, gemini-2.5-flash-preview-tts usually returns a format playble by decodeAudioData.
-    // Let's assume for this implementation we rely on the browser's ability to play the blob.
-    // If strictly RAW PCM is returned without header, we'd need to add a WAV header. 
-    // Based on standard usage of this endpoint, it usually works with decodeAudioData.
-    // Let's assume it works as a Blob for now.
+    const wavHeader = createWavHeader(len, 24000, 1, 16);
+    const blob = new Blob([wavHeader, bytes], { type: 'audio/wav' });
     return URL.createObjectURL(blob);
 };

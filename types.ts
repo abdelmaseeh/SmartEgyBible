@@ -7,7 +7,7 @@ export interface BibleBook {
 export interface Verse {
   number: number;
   original: string; // The Van Dyck / Standard Arabic text
-  translated: string; // The Egyptian Arabic text
+  translated?: string; // The Egyptian Arabic text (Optional now)
 }
 
 export interface ChapterTranslation {
